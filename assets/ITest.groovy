@@ -1,0 +1,3 @@
+interface ITest {
+    void onTest()
+}
