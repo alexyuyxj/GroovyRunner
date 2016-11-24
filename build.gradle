@@ -14,16 +14,119 @@ task clean(type: Delete) {
     delete rootProject.buildDir
 }
 
+// =================================================
+
+class GlobalVariables {
+	public static def buildTools
+	public static def compileSdkVersion
+	public static def proguardFile
+	public static def targetSdkVersion
+	public static def minSdkVersion
+	public static def applicationId
+	public static def versionCode
+	public static def versionName
+}
+
+def init() {
+	// read local.properties to parse android-sdk home, then find out the newest build tools
+	def localProperties = new File("local.properties")
+	if (localProperties.exists()) {
+		def properties = new Properties()
+		localProperties.withInputStream {
+			instr->properties.load(instr)
+		}
+		def sdkDir = properties.getProperty('sdk.dir')
+		def buildTools = new File(sdkDir, "build-tools")
+		if (buildTools.exists()) {
+			def tools = buildTools.list()
+			if (tools != null) {
+				Arrays.sort(tools)
+				GlobalVariables.buildTools = tools[tools.length - 1]
+			}
+		}
+	}
+	if (GlobalVariables.buildTools == null) {
+		throw RuntimeException("Faile to find build tools")
+	}
+
+	// parse the project.properties of the application to find out the compile sdk level
+	// default level is 19
+	GlobalVariables.compileSdkVersion = 19
+	def projProp = new File("project.properties")
+	if (projProp.exists()) {
+		def properties = new Properties()
+		projProp.withInputStream {
+			instr->properties.load(instr)
+		}
+		def target = properties.getProperty('target').trim()
+		def pref = "android-"
+		if (target != null && target.startsWith(pref)) {
+			try {
+				GlobalVariables.compileSdkVersion = Integer.parseInt(target.substring(pref.length()))
+			} catch (Throwable t) {}
+		}
+	}
+
+	// determine the path of proguard config file
+	def file = new File("proguard-project.txt")
+	GlobalVariables.proguardFile = (file).getAbsolutePath()
+
+	// parse the AndroidManifest of the application, our defaultConfig is copied from here
+	file = new File("AndroidManifest.xml")
+	def xml = new XmlSlurper()
+	def manifest = xml.parse(file)
+	try {
+		def tmpValue = manifest.getAt("uses-sdk").getProperty('@android:targetSdkVersion').toString()
+		GlobalVariables.targetSdkVersion = Integer.parseInt(tmpValue)
+	} catch (Throwable t) {
+		GlobalVariables.targetSdkVersion = GlobalVariables.compileSdkVersion
+	}
+	try {
+		def tmpValue = manifest.getAt("uses-sdk").getProperty('@android:minSdkVersion').toString()
+		GlobalVariables.minSdkVersion = Integer.parseInt(tmpValue)
+	} catch (Throwable t) {
+		GlobalVariables.minSdkVersion = GlobalVariables.targetSdkVersion
+	}
+	GlobalVariables.applicationId = manifest.getProperty('@package').toString()
+	try {
+		def tmpValue = manifest.getProperty('@android:versionCode').toString()
+		GlobalVariables.versionCode = Integer.parseInt(tmpValue)
+	} catch (Throwable t) {
+		GlobalVariables.versionCode = 1
+	}
+	try {
+		GlobalVariables.versionName = manifest.getProperty('@android:versionName').toString()
+	} catch (Throwable t) {
+		GlobalVariables.versionName = "1.0"
+	}
+
+	// print result
+	println("================================")
+	println("buildTools       : " + GlobalVariables.buildTools)
+	println("compileSdkVersion: " + GlobalVariables.compileSdkVersion)
+	println("proguardFile     : " + GlobalVariables.proguardFile)
+	println("targetSdkVersion : " + GlobalVariables.targetSdkVersion)
+	println("minSdkVersion    : " + GlobalVariables.minSdkVersion)
+	println("applicationId    : " + GlobalVariables.applicationId)
+	println("versionCode      : " + GlobalVariables.versionCode)
+	println("versionName      : " + GlobalVariables.versionName)
+	println("================================")
+}
+
+// =================================================
+
 android {
-    compileSdkVersion 24
-    buildToolsVersion "23.0.3"
+	init()
+
+    compileSdkVersion GlobalVariables.compileSdkVersion
+    buildToolsVersion GlobalVariables.buildTools
 
     defaultConfig {
-        applicationId "m.groovyrunner"
-        minSdkVersion 14
-        targetSdkVersion 24
-        versionCode 1
-        versionName "1.0"
+        applicationId GlobalVariables.applicationId
+        minSdkVersion GlobalVariables.minSdkVersion
+        targetSdkVersion GlobalVariables.targetSdkVersion
+        versionCode GlobalVariables.versionCode
+        versionName GlobalVariables.versionName
     }
 
     sourceSets {
