@@ -25,12 +25,14 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
 import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 
+import dalvik.system.DexClassLoader;
 import groovy.lang.GroovyClassLoader;
 
 public final class Grooroo {
@@ -56,55 +58,100 @@ public final class Grooroo {
 	}
 
 	private static final String combineScriptFromFile(String baseDir) throws Throwable {
-		ArrayList<String> list = new ArrayList<String>();
-		String[] names = new File(baseDir).list();
-		for (String name : names) {
-			if (name.endsWith(".groovy") || name.endsWith(".java")) {
-				list.add(name);
+		ArrayList<String> pathes = listDir(baseDir, new Listable() {
+			public String[] list(String dir) throws Throwable {
+				return new File(dir).list();
+			}
+
+			public boolean isFile(String path) throws Throwable {
+				return new File(path).isFile();
+			}
+		});
+
+		HashSet<String> imports = new HashSet<String>();
+		StringBuffer script = new StringBuffer();
+		for (String path : pathes) {
+			if (path.endsWith(".groovy") || path.endsWith(".java")) {
+				File file = new File(path);
+				InputStream is = new FileInputStream(file);
+				InputStreamReader isr = new InputStreamReader(is, "utf-8");
+				BufferedReader br = new BufferedReader(isr);
+				String line = br.readLine();
+				while (line != null) {
+					if (line.trim().startsWith("import ")) {
+						imports.add(line);
+					} else {
+						script.append(line).append('\n');
+					}
+					line = br.readLine();
+				}
+				br.close();
 			}
 		}
-
-		StringBuffer script = new StringBuffer();
-		for (String name : list) {
-			File file = new File(baseDir, name);
-			InputStream is = new FileInputStream(file);
-			InputStreamReader isr = new InputStreamReader(is, "utf-8");
-			BufferedReader br = new BufferedReader(isr);
-			String line = br.readLine();
-			while (line != null) {
-				script.append(line).append('\n');
-				line = br.readLine();
-			}
-			br.close();
+		for (String i : imports) {
+			script.append(i).append('\n');
 		}
 
 		return script.toString();
 	}
 
-	private static final String combineScriptFromAssets(Context context, String baseDir) throws Throwable {
-		ArrayList<String> list = new ArrayList<String>();
-		String[] names = context.getAssets().list(baseDir);
-		for (String name : names) {
-			if (name.endsWith(".groovy") || name.endsWith(".java")) {
-				list.add(name);
+	private static final String combineScriptFromAssets(final Context context, String baseDir)
+			throws Throwable {
+		ArrayList<String> pathes = listDir(baseDir, new Listable() {
+			public String[] list(String dir) throws Throwable {
+				return context.getAssets().list(dir);
+			}
+
+			public boolean isFile(String path) throws Throwable {
+				try {
+					InputStream is = context.getAssets().open(path);
+					is.close();
+					return true;
+				} catch (Throwable t) {}
+				return false;
+			}
+		});
+
+		HashSet<String> imports = new HashSet<String>();
+		StringBuffer script = new StringBuffer();
+		for (String path : pathes) {
+			if (path.endsWith(".groovy") || path.endsWith(".java")) {
+				InputStream is = context.getAssets().open(path);
+				InputStreamReader isr = new InputStreamReader(is, "utf-8");
+				BufferedReader br = new BufferedReader(isr);
+				String line = br.readLine();
+				while (line != null) {
+					if (line.trim().startsWith("import ")) {
+						imports.add(line);
+					} else {
+						script.append(line).append('\n');
+					}
+					line = br.readLine();
+				}
+				br.close();
 			}
 		}
-
-		StringBuffer script = new StringBuffer();
-		for (String name : list) {
-			String path = baseDir.length() == 0 ? name : (baseDir + "/" + name);
-			InputStream is = context.getAssets().open(path);
-			InputStreamReader isr = new InputStreamReader(is, "utf-8");
-			BufferedReader br = new BufferedReader(isr);
-			String line = br.readLine();
-			while (line != null) {
-				script.append(line).append('\n');
-				line = br.readLine();
-			}
-			br.close();
+		for (String i : imports) {
+			script.append(i).append('\n');
 		}
 
 		return script.toString();
+	}
+
+	private static final ArrayList<String> listDir(String dir, Listable lister) throws Throwable {
+		ArrayList<String> paths = new ArrayList<String>();
+		String[] names = lister.list(dir);
+		if (names != null) {
+			for (String name : names) {
+				String path = dir.length() == 0 ? name : (dir + "/" + name);
+				if (lister.isFile(path)) {
+					paths.add(path);
+				} else {
+					paths.addAll(listDir(path, lister));
+				}
+			}
+		}
+		return paths;
 	}
 
 	private static final HashMap<String, byte[]> parseScript(Context context, String script) throws Throwable {
@@ -214,6 +261,32 @@ public final class Grooroo {
 
 	private static final void loadClass(Context context, String name, ArrayList<String> classes,
 			HashMap<String, String> superClasses, HashMap<String, ArrayList<String>> interfaces,
+			DexClassLoader dcl) throws Throwable{
+		String superClass = superClasses.get(name);
+		if (superClass != null) {
+			int index = classes.indexOf(superClass);
+			if (index >= 0) {
+				classes.remove(index);
+				loadClass(context, superClass, classes, superClasses, interfaces, dcl);
+			}
+		}
+
+		ArrayList<String> interfaceNames = interfaces.get(name);
+		if (interfaceNames != null) {
+			for (String it : interfaceNames) {
+				int index = classes.indexOf(it);
+				if (index >= 0) {
+					classes.remove(index);
+					loadClass(context, it, classes, superClasses, interfaces, dcl);
+				}
+			}
+		}
+
+		dcl.loadClass(name);
+	}
+
+	private static final void loadClass(Context context, String name, ArrayList<String> classes,
+			HashMap<String, String> superClasses, HashMap<String, ArrayList<String>> interfaces,
 			dalvik.system.DexFile dexFile) throws Throwable{
 		String superClass = superClasses.get(name);
 		if (superClass != null) {
@@ -236,6 +309,14 @@ public final class Grooroo {
 		}
 
 		dexFile.loadClass(name, context.getClassLoader());
+	}
+
+	private static interface Listable {
+
+		public String[] list(String dir) throws Throwable;
+
+		public boolean isFile(String path) throws Throwable;
+
 	}
 
 }
