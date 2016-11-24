@@ -18,14 +18,17 @@ import org.codehaus.groovy.control.CompilationUnit;
 import org.codehaus.groovy.control.SourceUnit;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.FilenameFilter;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.jar.Attributes;
 import java.util.jar.JarEntry;
@@ -36,44 +39,9 @@ import groovy.lang.GroovyClassLoader;
 
 public final class Grooroo {
 
-	public static final void loadFromFiles(Context context, String baseDir) throws Throwable {
-		loadFromScript(context, combineScript(baseDir, new Listable() {
-			public String[] list(String dir) throws Throwable {
-				return new File(dir).list();
-			}
-
-			public boolean isFile(String path) throws Throwable {
-				return new File(path).isFile();
-			}
-
-			public InputStream open(String path) throws Throwable {
-				return new FileInputStream(path);
-			}
-		}));
-	}
-
-	public static final void loadFromAssets(final Context context, String baseDir) throws Throwable {
-		loadFromScript(context, combineScript(baseDir, new Listable() {
-			public String[] list(String dir) throws Throwable {
-				return context.getAssets().list(dir);
-			}
-
-			public boolean isFile(String path) throws Throwable {
-				try {
-					InputStream is = context.getAssets().open(path);
-					is.close();
-					return true;
-				} catch (Throwable t) {}
-				return false;
-			}
-
-			public InputStream open(String path) throws Throwable {
-				return context.getAssets().open(path);
-			}
-		}));
-	}
-
-	public static final void loadFromScript(Context context, String script) throws Throwable {
+	public static final void load(Context context, SourceSet source) throws Throwable {
+		HashMap<String, InputStream> sourceSet = readSource(context, source);
+		String script = combineScript(sourceSet);
 		HashMap<String, byte[]> classes = parseScript(context, script);
 		ArrayList<String> classesNames = new ArrayList<String>();
 		HashMap<String, String> superClasses = new HashMap<String, String>();
@@ -83,11 +51,108 @@ public final class Grooroo {
 		loadDex(context, jarFile, classesNames, superClasses, interfaces);
 	}
 
-	private static final String combineScript(String baseDir, Listable lister) throws Throwable {
-		HashMap<String, InputStream> files = openDir(baseDir, lister);
+	private static final HashMap<String, InputStream> readSource(final Context context, SourceSet source)
+			throws Throwable {
+		HashMap<String, InputStream> map = new LinkedHashMap<String, InputStream>();
+		final FilenameFilter filter = new FilenameFilter() {
+			public boolean accept(File dir, String name) {
+				return (name.endsWith(".groovy") || name.endsWith(".java"));
+			}
+		};
+		for (Source src : source.sourceSet) {
+			switch (src.type) {
+				case Source.TYPE_SCRIPT: {
+					String scrip = (String) src.source;
+					InputStream is = new ByteArrayInputStream(scrip.getBytes("utf-8"));
+					map.put(String.valueOf(System.currentTimeMillis()), is);
+				} break;
+				case Source.TYPE_FILE: {
+					String path = (String) src.source;
+					File file = new File(path);
+					if (file.isFile() && filter.accept(null, path)) {
+						map.put(path, new FileInputStream(path));
+					} else {
+						map.putAll(openDir(path, new Listable() {
+							public String[] list(String dir) throws Throwable {
+								return new File(dir).list();
+							}
+
+							public boolean isFile(String path) throws Throwable {
+								return new File(path).isFile();
+							}
+
+							public InputStream open(String path) throws Throwable {
+								return new FileInputStream(path);
+							}
+
+							public boolean filter(String path) throws Throwable {
+								return filter.accept(null, path);
+							}
+						}));
+					}
+				} break;
+				case Source.TYPE_ASSETS: {
+					String path = (String) src.source;
+					if (filter.accept(null, path)) {
+						try {
+							map.put(path, context.getAssets().open(path));
+							break;
+						} catch (Throwable t) {}
+					}
+					map.putAll(openDir(path, new Listable() {
+						public String[] list(String dir) throws Throwable {
+							return context.getAssets().list(dir);
+						}
+
+						public boolean isFile(String path) throws Throwable {
+							try {
+								InputStream is = context.getAssets().open(path);
+								is.close();
+								return true;
+							} catch (Throwable t) {}
+							return false;
+						}
+
+						public InputStream open(String path) throws Throwable {
+							return context.getAssets().open(path);
+						}
+
+						public boolean filter(String path) throws Throwable {
+							return filter.accept(null, path);
+						}
+					}));
+				} break;
+				case Source.TYPE_STREAM: {
+					map.put(String.valueOf(System.currentTimeMillis()), (InputStream) src.source);
+				} break;
+			}
+		}
+		return map;
+	}
+
+	private static final HashMap<String, InputStream> openDir(String dir, Listable lister) throws Throwable {
+		HashMap<String, InputStream> paths = new HashMap<String, InputStream>();
+		String[] names = lister.list(dir);
+		if (names != null) {
+			for (String name : names) {
+				String path = dir.length() == 0 ? name : (dir + "/" + name);
+				if (lister.isFile(path)) {
+					if (lister.filter(path)) {
+						InputStream is = lister.open(path);
+						paths.put(path, is);
+					}
+				} else {
+					paths.putAll(openDir(path, lister));
+				}
+			}
+		}
+		return paths;
+	}
+
+	private static final String combineScript(HashMap<String, InputStream> sourceSet) throws Throwable {
 		HashSet<String> imports = new HashSet<String>();
 		StringBuffer script = new StringBuffer();
-		for (Map.Entry<String, InputStream> ent : files.entrySet()) {
+		for (Map.Entry<String, InputStream> ent : sourceSet.entrySet()) {
 			InputStream is = ent.getValue();
 			InputStreamReader isr = new InputStreamReader(is, "utf-8");
 			BufferedReader br = new BufferedReader(isr);
@@ -112,7 +177,7 @@ public final class Grooroo {
 			if (!raw.endsWith(".*")) {
 				raw = raw.replace(".", "/");
 				boolean found = false;
-				for (Map.Entry<String, InputStream> ent : files.entrySet()) {
+				for (Map.Entry<String, InputStream> ent : sourceSet.entrySet()) {
 					if (ent.getKey().startsWith(raw)) {
 						found = true;
 						break;
@@ -126,23 +191,6 @@ public final class Grooroo {
 		}
 
 		return script.toString();
-	}
-
-	private static final HashMap<String, InputStream> openDir(String dir, Listable lister) throws Throwable {
-		HashMap<String, InputStream> paths = new HashMap<String, InputStream>();
-		String[] names = lister.list(dir);
-		if (names != null) {
-			for (String name : names) {
-				String path = dir.length() == 0 ? name : (dir + "/" + name);
-				if ((path.endsWith(".groovy") || path.endsWith(".java")) && lister.isFile(path)) {
-					InputStream is = lister.open(path);
-					paths.put(path, is);
-				} else {
-					paths.putAll(openDir(path, lister));
-				}
-			}
-		}
-		return paths;
 	}
 
 	private static final HashMap<String, byte[]> parseScript(Context context, String script) throws Throwable {
@@ -283,6 +331,64 @@ public final class Grooroo {
 		public boolean isFile(String path) throws Throwable;
 
 		public InputStream open(String path) throws Throwable;
+
+		public boolean filter(String path) throws Throwable;
+
+	}
+
+	private static final class Source {
+		public static final int TYPE_NONE = 0;
+		public static final int TYPE_SCRIPT = 1;
+		public static final int TYPE_FILE = 2;
+		public static final int TYPE_ASSETS = 3;
+		public static final int TYPE_STREAM = 4;
+
+		public int type;
+		public Object source;
+	}
+
+	public static final class SourceSet {
+		private final ArrayList<Source> sourceSet;
+
+		public SourceSet() {
+			sourceSet = new ArrayList<Source>();
+		}
+
+		public final SourceSet appendScript(String script) {
+			Source src = new Source();
+			src.type = Source.TYPE_SCRIPT;
+			src.source = script;
+			sourceSet.add(src);
+			return this;
+		}
+
+		public final SourceSet appendFile(String path) {
+			Source src = new Source();
+			src.type = Source.TYPE_FILE;
+			src.source = path;
+			sourceSet.add(src);
+			return this;
+		}
+
+		public final SourceSet appendAssets() {
+			return appendAssets("");
+		}
+
+		public final SourceSet appendAssets(String path) {
+			Source src = new Source();
+			src.type = Source.TYPE_ASSETS;
+			src.source = path;
+			sourceSet.add(src);
+			return this;
+		}
+
+		public final SourceSet appendStream(InputStream stream) {
+			Source src = new Source();
+			src.type = Source.TYPE_STREAM;
+			src.source = stream;
+			sourceSet.add(src);
+			return this;
+		}
 
 	}
 
