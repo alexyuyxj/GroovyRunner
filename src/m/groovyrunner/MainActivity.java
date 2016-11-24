@@ -13,7 +13,7 @@ public class MainActivity extends Activity {
 		try {
 			Grooroo.loadFromAssets(this, "");
 			Class<?> Main = getClassLoader().loadClass("Main");
-			Method mth = Main.getMethod("main", Context.class);
+			Method mth = Main.getMethod("print", Object.class);
 			mth.invoke(null, this);
 		} catch (Throwable t) {
 			t.printStackTrace();
