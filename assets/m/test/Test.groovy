@@ -1,3 +1,5 @@
+package m.test
+
 import android.widget.Toast
 
 class Test {
